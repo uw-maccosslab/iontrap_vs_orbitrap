@@ -1,0 +1,356 @@
+#Load packages
+
+library(tidyverse)
+library(ggExtra)
+library(magrittr)
+library(ggplot2)
+library(ggpubr)
+library(viridis)
+library(fuzzyjoin)
+
+#' Take Skyline info about transitions for a peptide and output plottable chromatogram
+#' Input is name and location of .csv from document grid containing following fields for a single peptide:
+#' @describeIn Replicate, Peptide, Fragment Ion, Raw Times, Raw Intensities, Analyzer, Min Start Time, Max End Time
+#' rep1 and rep2 are Replicate names of replicates that you want to plot
+#' 
+#' @return chr_plot, dataframe containing intentisities over time for each ion. Columns are:
+#' time: time of scan (in minutes)
+#' int: raw intensity of scan
+#' Ion: name of ion
+#' Replicate: Rep 1 or Rep 2
+#' left: left integration bound
+#' right: right integration bound
+
+extract_chromatogram <- function(signal_over_time, rep1, rep2) {
+  chromatogram_raw <- read.csv(signal_over_time) %>%
+    filter(Replicate == rep1 | Replicate == rep2) %>%
+    mutate(Raw.Times = as.character(Raw.Times)) %>%
+    mutate(Raw.Intensities = as.character(Raw.Intensities)) %>%
+    mutate(Replicate = if_else(Replicate == rep1, "Rep 1", "Rep 2"))
+  
+  chr_plot <- data.frame()
+
+  i <- 1
+  for(i in 1:nrow(chromatogram_raw)){
+  info <- data.frame(str_split(chromatogram_raw$Raw.Times[i], ",")) %>%
+    set_colnames(c("time")) %>% 
+    cbind(data.frame(str_split(chromatogram_raw$Raw.Intensities[i], ","))) %>%
+    set_colnames(c("time", "int")) %>%
+    mutate(time = as.numeric(as.character(time)))  %>%
+    mutate(int = as.numeric(as.character(int))) %>%
+    mutate(Ion = chromatogram_raw$Fragment.Ion[i])%>%
+    mutate(Replicate = chromatogram_raw$Replicate[i]) %>%
+    mutate(left = chromatogram_raw$Min.Start.Time[i]) %>%
+    mutate(right = chromatogram_raw$Max.End.Time[i])
+  
+  chr_plot <- rbind(chr_plot, info)
+  }
+  
+return(chr_plot)
+  
+}
+
+#' Generate chromatogram of all ions for peptide and reps from extract_chromatogram
+#' 
+#' @return ggplot object
+#' Vertical dashed lines show integration bounds
+
+plot_chromatogram <- function(chr_plot){
+  plot <- 
+    ggplot(chr_plot, aes(x = time, y = int, color = Ion)) +
+    geom_line(size = 1) +
+    scale_color_viridis_d() +
+    theme_minimal() +
+    facet_wrap(~Replicate, nrow = 2) +
+    geom_vline(data = chr_plot, aes(xintercept = left), linetype = "dashed") +
+    geom_vline(data = chr_plot, aes(xintercept = right), linetype = "dashed") +
+    ylab("Intensity") +
+    xlab("time (min)") +
+    theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+  
+    return(plot)
+}
+
+
+#' Take Skyline info about transitions for a peptide and output plottable chromatogram
+#' Input is name and location of .csv from document grid containing following fields for a single peptide:
+#' @describeIn Replicate Name, Fragment Ion, Area
+#' rep1 and rep2 are Replicate names of replicates that you want to plot
+#' 
+#' @return quant_df, dataframe containing info about quant for each transition and replicate. Columns are:
+#' Replicate: Run 1 or Run 2
+#' Ion: name of ion
+#' Area: area under the curve for that ion
+#' 
+extract_quant <- function(quant_doc, rep1, rep2) {
+ quant_df <- read.csv(quant_doc) %>%
+  filter(Replicate.Name == rep1 | Replicate.Name == rep2) %>%
+  select(Replicate.Name, Fragment.Ion, Area) %>%
+  set_colnames(c("Replicate", "Ion", "Area")) %>%
+  mutate(Replicate = if_else(Replicate == rep1, "Run 1", "Run 2"))
+ 
+ return(quant_df)
+
+}
+
+
+#' Generate quant bar graph of each transition
+#' 
+#' @return ggplot object
+
+plot_ion_quant <- function(quant_df){
+  plot <- 
+      ggplot(quant_df, aes(x = Replicate, fill = Ion, y = Area)) +
+      geom_col()+
+      scale_fill_viridis_d() +
+      theme_minimal() +
+      theme(axis.title.x = element_blank(), legend.position = "right")
+      
+    return(plot)
+}
+
+
+#' Calculate CV's within groups from Skyline summary
+#' Input is name and location of .csv from document grid containing following fields:
+#' @describeIn Replicate Name, Analyzer, Precursor Mz, Total Area, Peptide
+#' 
+#' @return CV_df, dataframe containing CVs as well as info for plotting later. Columns are:
+#' Peptide: peptide sequence
+#' Analyzer: mass analyzer, based on input column
+#' raw_CV: % CV based on raw areas
+#' median_CV: % CV based on median normalized areas
+#' RT: average retention time across all reps of analyzer
+#' outlier: T/F, indicating if median normalized %CV is above 20%
+
+calc_cvs <- function(replicate_injection_results){
+  
+  replicate_injection_results <- read.csv(replicate_injection_results) 
+  
+  CV_df <- replicate_injection_results %>% group_by(Replicate.Name) %>%
+    mutate(norm_area = Total.Area/median(Total.Area)) %>% ungroup() %>%
+    group_by(Peptide, Analyzer) %>% 
+    summarise(raw_CV = sd(Total.Area)/mean(Total.Area)*100,
+              median_CV = sd(norm_area)/mean(norm_area)*100,
+              RT = mean(Peptide.Retention.Time), 
+              avg_area = mean(Total.Area)) %>%
+    ungroup() %>%
+    group_by(Analyzer) %>%
+    mutate(outlier = median_CV > 20) %>% 
+    ungroup() %>%
+    mutate(Analyzer = gsub("m/z", "Th", Analyzer)) %>%
+    mutate(Analyzer = gsub("IT", "LIT", Analyzer))
+  
+  return(CV_df)
+  
+}
+
+#' Generate violin plot of median normalized CVs
+#' CV_df from calc_cvs function
+#' 
+#' @return ggplot object
+#' Peptides w/ %CV > 20% are plotted in gray
+
+cv_violin <- function(CV_df) {
+  
+  plot <- ggplot(CV_df, aes(y = median_CV, fill = Analyzer, x = Analyzer)) + 
+    geom_violin(color = NA) +
+    geom_boxplot(width=0.1, fill="white", outlier.shape = NA, color = "grey") + 
+    geom_jitter(data = function(x) dplyr::filter_(x, ~ outlier), color = "grey", width = 0.1) +
+    theme_minimal() + 
+    scale_fill_viridis(discrete = TRUE, option="D") +
+    ylab("% CV") + xlab("Analyzer") +
+    geom_hline(yintercept = 20, linetype = "dashed", color = "black", size = 0.5) +
+    theme(legend.position = "none")
+  
+  return(plot)
+    
+}
+
+#' Compare CV from two analyzers
+#' CV_df from calc_cvs function, and the exact names of two analyzers that are to be compared
+#' 
+#' @return dataframe CV_pairwise, with following columns:
+#' Peptide: peptide sequence
+#' ratio: ratio of median norm CV in analyzer1/ median norm CV in analyzer2
+#' lower_cv: Name of analyzer with lower %CV
+#' log_rat: log to of ratio
+
+cv_pairwise <- function(CV_df, analyzer1, analyzer2) {
+  
+  CV_pairwise <- select(CV_df, Peptide, Analyzer, median_CV) %>%
+    filter(Analyzer == analyzer1 | Analyzer == analyzer2) %>%
+    spread(Analyzer, median_CV) %>%
+    set_colnames(c("Peptide", "a1", "a2")) %>%
+    mutate(ratio = a1/a2) %>%
+    mutate(lower_cv = if_else(ratio < 1, analyzer1, "Tie")) %>%
+    mutate(lower_cv = if_else(ratio > 1, analyzer2, lower_cv)) %>%
+    mutate(lower_cv = if_else(is.na(ratio), "Tie", lower_cv))  %>%
+    mutate(log_rat = log(ratio, 10)) %>%
+    select(-a1, -a2)
+  
+  return(CV_pairwise)
+  
+}
+
+#' Plot histogram of CV ratios between two replicates calculated in cv_pairwise
+#' 
+#' @return Histogram of median ratios with vertical line at median ratio
+
+cv_pairwise_histogram <- function(CV_pairwise){
+  
+  plot <- ggplot(CV_pairwise, aes(x = log_rat, fill = lower_cv)) +
+    geom_histogram(color = "grey", bins = 50, size = 0.25) +
+    geom_vline(xintercept = median(CV_pairwise$log_rat), linetype = "dashed", size = 0.5) +
+    theme_minimal() +
+    xlab("log10(CV in linear ion trap/CV in Orbitrap)") +
+    ylab("Number of peptides") +
+    scale_fill_manual(values = c("#2D708EFF", "#FDE725FF")) +
+    theme(legend.position = "bottom") +
+    labs(fill = "Lower % CV in:") +
+    annotate("text", label = paste0("log10(median) = ", round(median(CV_pairwise$log_rat), 3),
+                                    "\nmedian = ", round(median(CV_pairwise$ratio), 3)), 
+               x = median(CV_pairwise$log_rat) + 0.05,
+               y = 30, hjust = "left")
+  
+  return(plot)
+  
+}
+
+
+#' Compare LOQ from two analyzers
+#' LIT_loq and OT_loq are outputs from calculate_loq.py 
+#' 
+#' @return dataframe LOQ_comp, with following columns:
+#' IT_LOQ: loq in ion trap
+#' Peptide: peptide sequence
+#' OT_LOQ: loq in Orbitrap
+#' ratio: ratio of LOQ in ion trap/ LOQ in Orbitrap
+#' Lower_loq: Name of analyzer with lower LOQ
+#' loq_rat: log to of ratio
+
+
+comp_loq <- function(LIT_loq, OT_loq){
+  LIT_fom <- read.delim(LIT_loq)
+  OT_fom <- read.delim(OT_loq)
+  
+  LOQ_comp <- full_join(select(LIT_fom, LOQ, Peptide.Modified.Sequence), 
+                      select(OT_fom, LOQ, Peptide.Modified.Sequence), by = "Peptide.Modified.Sequence") %>%
+    set_colnames(c("IT_LOQ", "Peptide", "OT_LOQ")) %>% 
+    mutate(ratio = IT_LOQ/OT_LOQ) %>%
+    mutate(Lower_loq = if_else(ratio > 1, "Orbitrap", "Tie")) %>%
+    mutate(Lower_loq = if_else(ratio < 1, "Linear ion trap", Lower_loq)) %>%
+    mutate(Lower_loq = if_else(is.na(ratio), "Tie", Lower_loq)) %>%
+    mutate(loq_rat = log(ratio, 10))
+
+  return(LOQ_comp)
+}
+
+#' Plot number of LOQs better in each analyzer
+#' 
+#' @return Histogram with bins for LOQ better in each analyzer
+
+loq_count_histogram <- function(LOQ_comp){
+  
+  plot <- ggplot(LOQ_comp, aes(x = Lower_loq, fill = Lower_loq)) +
+    geom_histogram(stat = "count") +
+    theme_minimal() +
+    scale_fill_manual(values = c("#2D708EFF", "#FDE725FF", "grey")) +
+    xlab("Lower LOQ")+
+    coord_cartesian(ylim =c(0, 250))+
+    labs(fill = "Lower LOQ in:")  +
+    ylab("Number of peptides")
+  
+  return(plot)
+  
+}
+
+#' Plot log ratio of LOQs better in each analyzer
+#' 
+#' @return Histogram with ratio of LOQs in each analyzer
+
+loq_ratio_histogram <- function(LOQ_comp){
+  
+  plot <- ggplot(LOQ_comp, aes(x = loq_rat, fill = Lower_loq)) +
+    geom_histogram(color = "grey", bins = 50, size = 0.25) +
+    geom_vline(xintercept=log(median(LOQ_comp$ratio), 10), linetype = "dashed") +
+    theme_minimal() +
+    xlab("log10(LOQ in linear ion trap/LOQ in Orbitrap)") +
+    ylab("Number of peptides") +
+    scale_fill_manual(values = c("#2D708EFF", "#FDE725FF", "grey")) +
+    labs(fill = "Lower LOQ in:")  +
+    annotate("text", label = paste0("log10(median) = ", round(median(LOQ_comp$loq_rat), 3),
+                                    "\nmedian = ", round(median(LOQ_comp$ratio), 3)), 
+               x = median(LOQ_comp$loq_rat) - 0.05,
+               y = 45, hjust = "right") +
+    coord_cartesian(ylim = c(0, 50))
+  
+  return(plot)
+  
+}
+
+
+
+
+
+
+
+###### Make plots
+
+# Change path to location of repo
+
+setwd("/Volumes/GoogleDrive/Shared drives/MacCoss Lab/LRH/iontrap_vs_orbitrap_eclipse/iontrap_vs_orbitrap")
+
+
+
+
+###### Plots from Figure 2
+
+# Read in chromatogram info
+chr_plot <- extract_chromatogram("data/interference_signal_over_time.csv", "IT_1-7_3", "IT_1-7_6")
+
+# Plot chromatogram
+plot_chromatogram(chr_plot)
+
+#Read in quant info
+quant_df <- extract_quant("data/interference_transition_quant.csv", "IT_1-7_3", "IT_1-7_6")
+
+#Plot quant info
+plot_ion_quant(quant_df)
+
+
+
+###### Plots from Figure 3
+
+#Get AUC values from Skyline
+CV_df <- calc_cvs("data/20201028_plasma_precision_info.csv")
+
+# Violin plot
+cv_violin(CV_df)
+
+#Compare CV in ion trap to Orbitrap
+CV_pairwise <- cv_pairwise(CV_df, "LIT, 1.7 Th", "OT, 1.7 Th")
+
+#Pairwise plot
+cv_pairwise_histogram(CV_pairwise)
+
+
+
+###### Plots from Figure 4
+
+# Compare original LOQs
+original_loq <- comp_loq("data/orig_quant_limits_IT.txt", "data/orig_quant_limits_OT.txt")
+
+# Plot histogram of number of peptides better in each histogram in original
+loq_count_histogram(original_loq)
+
+# Plot histogram of ratios of original LOQ
+loq_ratio_histogram(original_loq)
+
+# Compare optimized LOQs
+opt_loq <- comp_loq("data/opt_quant_limits_IT4.txt", "data/opt_quant_limits_OT4.txt")
+
+# Plot histogram of number of peptides better in each histogram in original
+loq_count_histogram(opt_loq)
+
+# Plot histogram of ratios of original LOQ
+loq_ratio_histogram(opt_loq)
