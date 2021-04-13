@@ -205,6 +205,56 @@ loq_ratio_histogram <- function(LOQ_comp){
 }
 
 
+#' Compare LOQ before and after optimization
+#' original_loq and opt_loq are outputs from calculate_loq.py
+#' Should have the columns:
+#' Peptide.Modified.Sequence, Protein.Name, Precursor.Mz, 
+#' Precursor.Charge, LOD, LOQ, Num.Transitions
+#' 
+#' @return dataframe LOQ_comp
+#' Peptide.Modified.Sequence: peptide sequence
+#' LOQ: Calculated LOQ
+#' Num.Transitions: Number of transitions for peptide
+#' Transitions: Whether transitions are original or optimized
+
+comp_loq <- function(original_loq, opt_loq){
+  original_fom <- read.delim(original_loq)
+  opt_fom <- read.delim(opt_loq)
+  
+  LOQ_comp <- mutate(select(opt_fom, Peptide.Modified.Sequence, LOQ, Num.Transitions), Transitions = "Optimized") %>%
+    bind_rows(mutate(select(original_fom, Peptide.Modified.Sequence, LOQ, Num.Transitions), Transitions = "Original"))
+  
+  return(LOQ_comp)
+}
+
+
+
+#' Plot kernel density estimate of LOQ
+#' Input results from comp_loq
+#' 
+#' @return ggplot of density estimate
+
+plot_refined_loq <- function(LOQ_comp){
+  original_med <- median(filter(LOQ_comp, Transitions == "Original")$LOQ)
+  opt_med <- median(filter(LOQ_comp, Transitions == "Optimized")$LOQ)
+  plot <-
+    ggplot(LOQ_comp, aes(x = LOQ, fill = Transitions, color = Transitions))  +
+    geom_density(alpha = 0, size = 1) +
+    theme_minimal() +
+    xlab("LOQ") +
+    ylab("Number of peptides") +
+    scale_fill_manual(values = c("#F94144", "#577590")) +
+    scale_color_manual(values = c("#F94144", "#577590")) +
+    theme(legend.position = "bottom") +
+    geom_vline(xintercept = opt_med, linetype = "dashed", size = 0.5, color = "#F94144") +
+    geom_vline(xintercept = original_med, linetype = "dashed", size = 0.5, color = "#577590") +
+    scale_x_log10()
+  
+  return(plot)
+}
+
+
+
 
 
 ###### Make plots
@@ -246,3 +296,18 @@ loq_count_histogram(opt_loq)
 
 # Plot histogram of ratios of original LOQ
 loq_ratio_histogram(opt_loq)
+
+
+###### Plot for figure 4
+
+# Read in data
+
+IT_comp_LOQ <- comp_loq("data/orig_quant_limits_IT.txt", "data/opt_quant_limits_IT4.txt")
+
+OT_comp_LOQ <- comp_loq("data/orig_quant_limits_OT.txt", "data/opt_quant_limits_OT4.txt")
+
+# Plot for linear ion trap 
+plot_refined_loq(IT_comp_LOQ)
+
+# Plot for Orbitrap
+plot_refined_loq(OT_comp_LOQ)

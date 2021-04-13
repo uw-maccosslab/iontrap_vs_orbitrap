@@ -701,30 +701,6 @@ comp_loq <- function(original_loq, opt_loq){
 
 
 
-#' Plot kernel density estimate of LOQ
-#' Input results from comp_loq
-#' 
-#' @return ggplot of density estimate
-
-plot_refined_loq <- function(LOQ_comp){
-  original_med <- median(filter(LOQ_comp, Transitions == "Original")$LOQ)
-  opt_med <- median(filter(LOQ_comp, Transitions == "Optimized")$LOQ)
-  plot <-
-    ggplot(LOQ_comp, aes(x = LOQ, fill = Transitions, color = Transitions))  +
-    geom_density(alpha = 0, size = 1) +
-    theme_minimal() +
-    xlab("LOQ") +
-    ylab("Number of peptides") +
-    scale_fill_manual(values = c("#F94144", "#577590")) +
-    scale_color_manual(values = c("#F94144", "#577590")) +
-    theme(legend.position = "bottom") +
-    geom_vline(xintercept = opt_med, linetype = "dashed", size = 0.5, color = "#F94144") +
-    geom_vline(xintercept = original_med, linetype = "dashed", size = 0.5, color = "#577590") +
-    scale_x_log10()
-  
-  return(plot)
-}
-
 
 
 #' Plot histogram of number of transitions before and after refinement
@@ -840,7 +816,9 @@ plot_eval_original_trans(all_sim_ions)
 
 
 
-###### Plot for figure S8
+
+
+###### Plot for figure S9
 
 # Read in data
 
@@ -848,15 +826,6 @@ IT_comp_LOQ <- comp_loq("data/orig_quant_limits_IT.txt", "data/opt_quant_limits_
 
 OT_comp_LOQ <- comp_loq("data/orig_quant_limits_OT.txt", "data/opt_quant_limits_OT4.txt")
 
-# Plot for linear ion trap 
-plot_refined_loq(IT_comp_LOQ)
-
-# Plot for Orbitrap
-plot_refined_loq(OT_comp_LOQ)
-
-
-
-###### Plot for figure S9
 
 # Plot for linear ion trap 
 plot_refined_transitions(IT_comp_LOQ)
